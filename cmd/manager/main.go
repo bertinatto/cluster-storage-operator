@@ -72,6 +72,7 @@ func tryDeleteIncompatibleLock(config *rest.Config, lockName string) error {
 
 	log.Info("Found ConfigMap lock without metadata.ownerReferences, deleting")
 	err = cl.Delete(context.TODO(), cm)
+	log.Error(err, "fjb: Error deleting")
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
