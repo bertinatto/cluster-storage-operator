@@ -6,7 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/labels"
+	coreinformersv1 "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
+	corelistersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 
 	operatorapi "github.com/openshift/api/operator/v1"
@@ -34,6 +37,7 @@ type CSIDriverOperatorDeploymentController struct {
 	operatorClient    v1helpers.OperatorClient
 	csiOperatorConfig csioperatorclient.CSIOperatorConfig
 	kubeClient        kubernetes.Interface
+	nodeLister        corelistersv1.NodeLister
 	versionGetter     status.VersionGetter
 	targetVersion     string
 	eventRecorder     events.Recorder
@@ -48,6 +52,7 @@ const (
 
 func NewCSIDriverOperatorDeploymentController(
 	clients *csoclients.Clients,
+	nodeInformer coreinformersv1.NodeInformer,
 	csiOperatorConfig csioperatorclient.CSIOperatorConfig,
 	versionGetter status.VersionGetter,
 	targetVersion string,
@@ -67,6 +72,7 @@ func NewCSIDriverOperatorDeploymentController(
 	// controller queue, without anything reading it.
 	f = f.WithInformers(
 		clients.OperatorClient.Informer(),
+		clients.KubeInformers.InformersFor("").Core().V1().Nodes().Informer(),
 		clients.KubeInformers.InformersFor(csoclients.CSIOperatorNamespace).Apps().V1().Deployments().Informer())
 
 	c := &CSIDriverOperatorDeploymentController{
@@ -74,6 +80,7 @@ func NewCSIDriverOperatorDeploymentController(
 		operatorClient:    clients.OperatorClient,
 		csiOperatorConfig: csiOperatorConfig,
 		kubeClient:        clients.KubeClient,
+		nodeLister:        clients.KubeInformers.InformersFor("").Core().V1().Nodes().Lister(),
 		versionGetter:     versionGetter,
 		targetVersion:     targetVersion,
 		eventRecorder:     eventRecorder.WithComponentSuffix(csiOperatorConfig.ConditionPrefix),
@@ -112,6 +119,23 @@ func (c *CSIDriverOperatorDeploymentController) Sync(ctx context.Context, syncCt
 	if err != nil {
 		return fmt.Errorf("failed to inject proxy data into deployment: %w", err)
 	}
+
+	// Set the number of replicas according to the number of nodes available
+	nodeSelector := requiredCopy.Spec.Template.Spec.NodeSelector
+	nodes, err := c.nodeLister.List(labels.SelectorFromSet(nodeSelector))
+	if err != nil {
+		// This will set Degraded condition
+		return err
+	}
+
+	// Set the deployment.Spec.Replicas field according to the number
+	// of available nodes. If the number of available nodes is bigger
+	// than 1, then the number of replicas will be 2.
+	replicas := int32(1)
+	if len(nodes) > 1 {
+		replicas = int32(2)
+	}
+	requiredCopy.Spec.Replicas = &replicas
 
 	_, err = csoutils.CreateDeployment(csoutils.DeploymentOptions{
 		Required:       requiredCopy,

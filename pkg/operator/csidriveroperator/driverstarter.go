@@ -181,6 +181,7 @@ func (c *CSIDriverStarterController) createCSIControllerManager(
 
 	manager = manager.WithController(NewCSIDriverOperatorDeploymentController(
 		clients,
+		clients.KubeInformers.InformersFor("").Core().V1().Nodes(),
 		cfg,
 		c.versionGetter,
 		c.targetVersion,
